@@ -33,7 +33,7 @@ The system prioritizes **inclusive discovery** instead of rigid rejection, ensur
 ### User Input Example
 ![Input Example](images/input1.png)
 
-### Bot Output Example
+### More Examples
 ![Output Example](images/input2.png)
 
 ---
