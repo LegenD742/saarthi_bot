@@ -1,9 +1,9 @@
 import streamlit as st
 import requests
 
-st.set_page_config(page_title="Gov Scheme AI", page_icon="")
+st.set_page_config(page_title="Saarthi Bot", page_icon="")
 
-st.title("Government Scheme Assistant")
+st.title("Saarthi Bot")
 st.write("Describe your situation in English or Hindi.")
 
 if "messages" not in st.session_state:

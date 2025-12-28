@@ -52,7 +52,6 @@ def transform_scheme(raw):
             "residence_state": [state] if state else ["ALL"]
         },
 
-        # 👇 Preserve original text (VERY IMPORTANT)
         "benefits_text": raw.get("benefits"),
         "eligibility_text": raw.get("eligibility"),
         "details_text": raw.get("details"),
