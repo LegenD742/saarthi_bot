@@ -1,10 +1,10 @@
 def retrieve_candidates(schemes, user_profile, limit=50):
     """
-    Retrieve candidate schemes based on beneficiary group (farmer / student).
-    Intent keywords are NOT used for hard filtering.
+    Retrieve candidate schemes with intent-aware filtering.
     """
 
     occupation = user_profile.get("occupation")
+    intent = user_profile.get("intent")
     user_state = user_profile.get("state")
 
     candidates = []
@@ -12,23 +12,49 @@ def retrieve_candidates(schemes, user_profile, limit=50):
     for scheme in schemes:
         tag_set = scheme.get("_tag_set", set())
 
+        # -----------------------------
+        # 🔹 Occupation-based filtering
+        # -----------------------------
         if occupation == "farmer":
-            if "farmer" not in tag_set and "agriculture" not in tag_set:
+            if not {"farmer", "agriculture"}.intersection(tag_set):
                 continue
 
         elif occupation == "student":
-            if "student" not in tag_set and "education" not in tag_set:
+            if not {"student", "education", "scholarship"}.intersection(tag_set):
                 continue
 
-        else:
-            continue
+        # -----------------------------
+        # 🔹 Intent-based filtering
+        # -----------------------------
+        if intent == "employment":
+            if not {
+                "employment",
+                "unemployed",
+                "job",
+                "jobs",
+                "skill",
+                "training",
+                "youth",
+                "entrepreneur"
+            }.intersection(tag_set):
+                continue
 
+        elif intent == "Scholarship":
+            if not {"education", "student", "scholarship"}.intersection(tag_set):
+                continue
+
+        # -----------------------------
+        # 🌍 State filter (ALL always allowed)
+        # -----------------------------
         scheme_state = scheme.get("state", "ALL")
-        if user_state:
-            if scheme_state != "ALL" and user_state.lower() not in scheme_state.lower():
+        if scheme_state and scheme_state.upper() != "ALL":
+            if user_state and user_state.lower() not in scheme_state.lower():
                 continue
 
         candidates.append(scheme)
+
+        # 🔍 Debug (safe to remove later)
+        print(scheme["name"], scheme["_tag_set"], scheme.get("state"))
 
         if len(candidates) >= limit:
             break

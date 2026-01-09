@@ -1,28 +1,40 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+# NLP (Gemini only for extraction)
 from app.nlp.gemini_extractor import extract_entities_with_gemini
-from app.utils.normalization import normalize_occupation, normalize_intent
 
+# Normalization
+from app.utils.normalization import (
+    normalize_occupation,
+    normalize_intent,
+    normalize_income,
+)
+
+# Session helpers
+from app.utils.profile_merge import merge_profiles
+from app.utils.missing_info import get_missing_fields
+
+# Scheme engine
 from app.matcher.load_schemes import load_schemes
 from app.matcher.preprocess import preprocess_schemes
 from app.matcher.retrieve_candidates import retrieve_candidates
-from app.matcher.ai_eligibility import check_eligibility_with_ai
 
+# Rejection / grievance
 from app.utils.grievance_detector import is_rejection_message
 from app.utils.grievance_followup import generate_rejection_followup
-
+from app.utils.rejection_details_parser import extract_scheme_and_docs
 from app.matcher.rejection_analyzer import analyze_rejection
 from app.matcher.alternate_schemes import find_alternate_schemes
-from app.utils.rejection_details_detector import looks_like_rejection_details
-from app.utils.rejection_details_parser import extract_scheme_and_docs
-
 
 
 router = APIRouter()
 
-# Load & preprocess schemes once
+# Load schemes once at startup
 schemes = preprocess_schemes(load_schemes())
+
+# In-memory session store (hackathon safe)
+USER_SESSIONS = {}
 
 
 class ChatRequest(BaseModel):
@@ -33,59 +45,119 @@ class ChatResponse(BaseModel):
     reply: str
 
 
+# --------------------------------------------------
+# BASIC RULE-BASED ELIGIBILITY (NO AI)
+# --------------------------------------------------
+def basic_eligibility(user, scheme):
+    es = scheme.get("eligibility_structured", {}) or {}
+
+    # Age
+    if es.get("min_age") and user.get("age"):
+        if user["age"] < es["min_age"]:
+            return False
+
+    if es.get("max_age") and user.get("age"):
+        if user["age"] > es["max_age"]:
+            return False
+
+    # Category
+    if es.get("category") and user.get("category"):
+        if es["category"] != user["category"]:
+            return False
+
+    # Income
+    if es.get("income_level") and user.get("income_level"):
+        if es["income_level"] != user["income_level"]:
+            return False
+
+    return True
+
+
 @router.post("/chat", response_model=ChatResponse)
-def chat_endpoint(request: ChatRequest):
+def chat_endpoint(request: Request, body: ChatRequest):
     try:
         print("\n========== NEW CHAT ==========")
-        print("User message:", request.message)
+        print("User message:", body.message)
 
-        # 🔴 STEP 0: If user says they were rejected → ask for details
-        if is_rejection_message(request.message):
+        session_id = request.client.host if request.client else "anonymous"
+        session = USER_SESSIONS.get(session_id, {})
+
+        # --------------------------------------------------
+        # 🔴 STEP 0: REJECTION TRIGGER (LOCK MODE)
+        # --------------------------------------------------
+        if is_rejection_message(body.message):
+            USER_SESSIONS[session_id] = {
+                "intent": "rejectiondetails"
+            }
             return ChatResponse(
-                reply=generate_rejection_followup(request.message)
+                reply=generate_rejection_followup(body.message)
             )
 
-        # 1️⃣ Extract user profile using Gemini
-        user_profile = extract_entities_with_gemini(request.message)
+        # --------------------------------------------------
+        # 1️⃣ Extract entities (Gemini = NLP only)
+        # --------------------------------------------------
+        new_profile = extract_entities_with_gemini(body.message)
 
-        # 🔧 Normalize
-        user_profile["occupation"] = normalize_occupation(
-            user_profile.get("occupation")
+        new_profile["occupation"] = normalize_occupation(
+            new_profile.get("occupation")
         )
-        user_profile["intent"] = normalize_intent(
-            user_profile.get("intent")
+        new_profile["intent"] = normalize_intent(
+            new_profile.get("intent")
         )
 
-        if user_profile.get("intent") == "scholarship":
-            user_profile["intent"] = "Scholarship"
+        # --------------------------------------------------
+        # 2️⃣ Merge with session profile
+        # --------------------------------------------------
+        old_profile = USER_SESSIONS.get(session_id, {})
+        user_profile = merge_profiles(old_profile, new_profile)
+        USER_SESSIONS[session_id] = user_profile
 
-        # 🔑 FORCE rejectiondetails if message looks like rejection data
-        if looks_like_rejection_details(request.message):
+        # --------------------------------------------------
+        # 3️⃣ Normalize income (0 is valid)
+        # --------------------------------------------------
+        if "income_level" in user_profile:
+            norm_income = normalize_income(user_profile.get("income_level"))
+            if norm_income is not None:
+                user_profile["income_level"] = norm_income
+
+        # --------------------------------------------------
+        # 🔒 LOCK REJECTION MODE (CRITICAL FIX)
+        # --------------------------------------------------
+        if session.get("intent") == "rejectiondetails":
             user_profile["intent"] = "rejectiondetails"
 
-        print("🧠 Extracted user profile:", user_profile)
+        print("🧠 Merged user profile:", user_profile)
 
-        if not user_profile or not isinstance(user_profile, dict):
-            return ChatResponse(
-                reply="I couldn't understand your details clearly. Please try rephrasing."
-            )
-
-        # 🟥 REJECTION ANALYSIS MODE
+        # --------------------------------------------------
+        # 🟥 REJECTION ANALYSIS MODE (STATEFUL)
+        # --------------------------------------------------
         if user_profile.get("intent") == "rejectiondetails":
-            scheme_name, submitted_docs = extract_scheme_and_docs(request.message)
 
-            user_profile["scheme_name"] = scheme_name
-            user_profile["submitted_documents"] = submitted_docs
+            scheme_name, submitted_docs = extract_scheme_and_docs(body.message)
 
+            # 🔐 Persist rejection data in session
+            if scheme_name:
+                user_profile["rejection_scheme"] = scheme_name
 
-            if not scheme_name or not submitted_docs:
+            if submitted_docs:
+                existing = user_profile.get("submitted_documents", [])
+                user_profile["submitted_documents"] = list(
+                    set(existing + submitted_docs)
+                )
+
+            # 🔁 Read from session (NOT current message)
+            scheme_name = user_profile.get("rejection_scheme")
+            submitted_docs = user_profile.get("submitted_documents", [])
+
+            # Ask ONLY for what is missing
+            if not scheme_name:
                 return ChatResponse(
-                    reply=(
-                        "Please provide:\n"
-                        "• Scheme name\n"
-                        "• Your age, category, state\n"
-                        "• Documents you submitted"
-                    )
+                    reply="Please tell me the scheme name you applied for."
+                )
+
+            if not submitted_docs:
+                return ChatResponse(
+                    reply="Please list the documents you submitted."
                 )
 
             scheme = next(
@@ -98,8 +170,7 @@ def chat_endpoint(request: ChatRequest):
                     reply="I could not find this scheme in my database."
                 )
 
-            user_profile["submitted_documents"] = submitted_docs
-
+            # Analyze rejection
             issues = analyze_rejection(user_profile, scheme)
 
             reply = ""
@@ -113,6 +184,7 @@ def chat_endpoint(request: ChatRequest):
                     "The rejection may be due to verification or technical reasons.\n"
                 )
 
+            # Suggest alternates
             alternates = find_alternate_schemes(
                 schemes, scheme, user_profile
             )
@@ -124,80 +196,56 @@ def chat_endpoint(request: ChatRequest):
 
             return ChatResponse(reply=reply)
 
-        # 2️⃣ Normal scheme discovery
+        # --------------------------------------------------
+        # 🟢 NORMAL SCHEME DISCOVERY
+        # --------------------------------------------------
         candidates = retrieve_candidates(schemes, user_profile)
-        print(f"🔍 Candidates after intent+state filter: {len(candidates)}")
 
         if not candidates:
-            return ChatResponse(
-                reply="I couldn't find relevant schemes for your request."
-            )
+            missing = get_missing_fields(user_profile)
 
-        # 3️⃣ Farmer insurance shortcut
-        if user_profile.get("occupation") == "farmer":
-            insurance_schemes = [
-                s for s in candidates
-                if "insurance" in s.get("_tag_set", set())
-                or "life" in s.get("_tag_set", set())
-            ]
-
-            if insurance_schemes:
-                reply = "You may be eligible for the following farmer insurance schemes:\n\n"
-                for idx, s in enumerate(insurance_schemes[:3], start=1):
-                    reply += (
-                        f"{idx}. {s.get('name')}\n"
-                        f"   • Benefit: {s.get('benefits_text', '')[:150]}...\n"
-                    )
-
-                    if s.get("documents_text"):
-                        reply += f"   • Documents Required: {s.get('documents_text')}\n\n"
-                    else:
-                        reply += "   • Documents Required: Please check official portal or CSC\n\n"
+            if missing:
+                reply = (
+                    "I need a bit more information to find suitable schemes.\n\n"
+                    "Please tell me:\n"
+                )
+                for f in missing:
+                    reply += f"• Your {f}\n"
 
                 return ChatResponse(reply=reply)
 
-        # 4️⃣ AI eligibility (limited)
-        results = []
-        MAX_AI_CHECKS = 2
-
-        for idx, scheme in enumerate(candidates):
-            if idx >= MAX_AI_CHECKS:
-                break
-
-            decision = check_eligibility_with_ai(user_profile, scheme)
-
-            if decision.get("eligible"):
-                results.append({
-                    "Scheme": scheme.get("name"),
-                    "Benefit": scheme.get("benefits_text", "See scheme details"),
-                    "Reason": decision.get("reason"),
-                    "Documents": scheme.get("documents_text"),
-                })
-
-            if len(results) >= 3:
-                break
-
-        if not results:
             return ChatResponse(
-                reply=(
-                    "Based on the information you provided, additional details may be required. "
-                    "Please check with the nearest CSC or official portal."
-                )
+                reply="There are currently no schemes applicable to your profile."
             )
 
-        # 5️⃣ Final response
-        reply = "Here are some schemes you may be eligible for:\n\n"
-        for idx, r in enumerate(results, start=1):
+        # --------------------------------------------------
+        # 4️⃣ RULE-BASED ELIGIBILITY FILTER
+        # --------------------------------------------------
+        eligible = [
+            s for s in candidates
+            if basic_eligibility(user_profile, s)
+        ][:3]
+
+        if not eligible:
+            return ChatResponse(
+                reply="Based on official eligibility rules, no schemes apply."
+            )
+
+        # --------------------------------------------------
+        # 5️⃣ FINAL RESPONSE
+        # --------------------------------------------------
+        reply = "Here are some schemes that match your profile:\n\n"
+
+        for idx, s in enumerate(eligible, 1):
             reply += (
-                f"{idx}. {r['Scheme']}\n"
-                f"   • Benefit: {r['Benefit']}\n"
-                f"   • Reason: {r['Reason']}\n"
+                f"{idx}. {s.get('name')}\n"
+                f"   • Benefit: {s.get('benefits_text', '')}\n"
             )
 
-            if r.get("Documents"):
-                reply += f"   • Documents Required: {r['Documents']}\n\n"
+            if s.get("documents_text"):
+                reply += f"   • Documents Required: {s['documents_text']}\n\n"
             else:
-                reply += "   • Documents Required: Please check official portal or CSC\n\n"
+                reply += "   • Documents Required: Check official portal or CSC\n\n"
 
         return ChatResponse(reply=reply)
 

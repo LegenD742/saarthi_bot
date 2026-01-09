@@ -1,82 +1,92 @@
 import re
 
 
-def extract_required_documents(documents_text: str):
+def extract_required_documents(doc_text: str):
     """
-    Extracts document names from documents_text (simple heuristic)
+    Extract required documents from scheme.documents_text
     """
-    if not documents_text:
+    if not doc_text:
         return []
 
-    common_docs = [
-        "aadhaar",
-        "income certificate",
-        "caste certificate",
-        "bank account",
-        "domicile",
-        "residence proof",
-        "age proof",
-        "ration card",
-        "death certificate"
-    ]
+    text = doc_text.lower()
 
-    text = documents_text.lower()
-    return [doc for doc in common_docs if doc in text]
+    # Common cleanup
+    text = text.replace(":", " ")
+    text = text.replace("(", " ").replace(")", " ")
+
+    # Split on bullets, commas, newlines, semicolons
+    parts = re.split(r"[•,\n;/]", text)
+
+    required_docs = []
+    for p in parts:
+        p = p.strip()
+        if len(p) > 3:
+            required_docs.append(p)
+
+    return required_docs
 
 
-def analyze_rejection(user_profile: dict, scheme: dict):
+def normalize_doc_name(doc: str):
     """
-    Returns list of issues found
+    Normalize document names for comparison
+    """
+    doc = doc.lower().strip()
+
+    replacements = {
+        "aadhar": "aadhaar",
+        "aadhaar card": "aadhaar",
+        "pan card": "pan",
+        "voter id": "voter",
+        "birth certificate": "birth",
+        "income certificate": "income",
+        "caste certificate": "caste",
+        "domicile certificate": "domicile",
+        "disability certificate": "disability",
+        "passport size photo": "photo",
+    }
+
+    for k, v in replacements.items():
+        if k in doc:
+            return v
+
+    return doc
+
+
+def analyze_rejection(user_profile, scheme):
+    """
+    Compare user submitted documents against scheme.documents_text.
+    Returns list of rejection reasons.
     """
     issues = []
 
-    eligibility = scheme.get("eligibility_structured", {})
-
-    # ---- AGE ----
-    age = user_profile.get("age")
-    min_age = eligibility.get("min_age")
-    max_age = eligibility.get("max_age")
-
-    if age:
-        if min_age and age < min_age:
-            issues.append(f"Minimum age required is {min_age}")
-        if max_age and age > max_age:
-            issues.append(f"Maximum age allowed is {max_age}")
-
-    # ---- CATEGORY ----
-    scheme_category = eligibility.get("category")
-    user_category = user_profile.get("category")
-
-    if scheme_category and user_category:
-        if user_category not in scheme_category:
-            issues.append(
-                f"Scheme is for {scheme_category}, but you applied as {user_category}"
-            )
-
-    # ---- STATE ----
-    allowed_states = eligibility.get("residence_state", [])
-    user_state = user_profile.get("state")
-
-    if allowed_states and user_state:
-        if "ALL" not in allowed_states and user_state not in allowed_states:
-            issues.append(
-                f"Scheme not applicable in {user_state}"
-            )
-
-    # ---- DOCUMENTS ----
     submitted_docs = user_profile.get("submitted_documents", [])
-    required_docs = extract_required_documents(
+    if not submitted_docs:
+        return ["No documents were submitted."]
+
+    submitted_norm = [
+        normalize_doc_name(d) for d in submitted_docs
+    ]
+
+    required_docs_raw = extract_required_documents(
         scheme.get("documents_text", "")
     )
 
-    missing_docs = []
-    for doc in required_docs:
-        if not any(doc in d.lower() for d in submitted_docs):
-            missing_docs.append(doc)
+    if not required_docs_raw:
+        # Scheme does not specify documents clearly
+        return []
 
-    if missing_docs:
+    required_norm = [
+        normalize_doc_name(d) for d in required_docs_raw
+    ]
+
+    missing = []
+    for req in required_norm:
+        if not any(req in s for s in submitted_norm):
+            missing.append(req)
+
+    if missing:
         issues.append(
-            "Missing required documents: " + ", ".join(missing_docs)
+            "Missing required documents: " + ", ".join(missing)
         )
 
     return issues

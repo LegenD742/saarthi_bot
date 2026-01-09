@@ -19,6 +19,19 @@ INTENT_KEYWORDS = {
     "Financial" :[
         "money","financial"
     ],
+     "employment": [
+        "employment",
+        "job",
+        "livelihood",
+        "skill",
+        "Employment"
+        "training",
+        "placement",
+        "self employment",
+        "Self-employment",
+        "apprenticeship",
+        "internship"
+    ],
     "social_welfare": [
         "relief", "assistance", "pension", "welfare"
     ]

@@ -47,3 +47,47 @@ def normalize_intent(intent):
         return "farmer"
 
     return intent
+
+def normalize_income(income):
+    """
+    Normalizes income into: low / medium / high
+    Accepts numbers or text.
+    """
+
+    if income is None:
+        return None
+
+    # If already numeric
+    if isinstance(income, (int, float)):
+        if income <= 72000:
+            return "low"
+        elif income <= 120000:
+            return "medium"
+        else:
+            return "high"
+
+    # If string
+    income_str = str(income).lower().strip()
+
+    # Text-based inputs
+    if income_str in ["low", "poor", "below poverty"]:
+        return "low"
+
+    if income_str in ["medium", "middle"]:
+        return "medium"
+
+    if income_str in ["high", "rich"]:
+        return "high"
+
+    # Numeric string
+    if income_str.isdigit():
+        value = int(income_str)
+        if value <= 72000:
+            return "low"
+        elif value <= 120000:
+            return "medium"
+        else:
+            return "high"
+
+    return None
+
