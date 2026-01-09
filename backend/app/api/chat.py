@@ -14,11 +14,14 @@ from app.utils.grievance_followup import generate_rejection_followup
 
 from app.matcher.rejection_analyzer import analyze_rejection
 from app.matcher.alternate_schemes import find_alternate_schemes
+from app.utils.rejection_details_detector import looks_like_rejection_details
+from app.utils.rejection_details_parser import extract_scheme_and_docs
+
 
 
 router = APIRouter()
 
-# 🔹 Load & preprocess schemes once
+# Load & preprocess schemes once
 schemes = preprocess_schemes(load_schemes())
 
 
@@ -36,10 +39,11 @@ def chat_endpoint(request: ChatRequest):
         print("\n========== NEW CHAT ==========")
         print("User message:", request.message)
 
-        # 🔴 STEP 0: Detect rejection & ask for details
+        # 🔴 STEP 0: If user says they were rejected → ask for details
         if is_rejection_message(request.message):
-            followup = generate_rejection_followup(request.message)
-            return ChatResponse(reply=followup)
+            return ChatResponse(
+                reply=generate_rejection_followup(request.message)
+            )
 
         # 1️⃣ Extract user profile using Gemini
         user_profile = extract_entities_with_gemini(request.message)
@@ -52,9 +56,12 @@ def chat_endpoint(request: ChatRequest):
             user_profile.get("intent")
         )
 
-        # Fix Scholarship casing
         if user_profile.get("intent") == "scholarship":
             user_profile["intent"] = "Scholarship"
+
+        # 🔑 FORCE rejectiondetails if message looks like rejection data
+        if looks_like_rejection_details(request.message):
+            user_profile["intent"] = "rejectiondetails"
 
         print("🧠 Extracted user profile:", user_profile)
 
@@ -63,11 +70,13 @@ def chat_endpoint(request: ChatRequest):
                 reply="I couldn't understand your details clearly. Please try rephrasing."
             )
 
-        # 🟥 REJECTION COMPARISON MODE
-        # (user already provided scheme + details + documents)
+        # 🟥 REJECTION ANALYSIS MODE
         if user_profile.get("intent") == "rejectiondetails":
-            scheme_name = user_profile.get("scheme_name")
-            submitted_docs = user_profile.get("submitted_documents", [])
+            scheme_name, submitted_docs = extract_scheme_and_docs(request.message)
+
+            user_profile["scheme_name"] = scheme_name
+            user_profile["submitted_documents"] = submitted_docs
+
 
             if not scheme_name or not submitted_docs:
                 return ChatResponse(
@@ -104,7 +113,6 @@ def chat_endpoint(request: ChatRequest):
                     "The rejection may be due to verification or technical reasons.\n"
                 )
 
-            # 🔁 Suggest alternate schemes
             alternates = find_alternate_schemes(
                 schemes, scheme, user_profile
             )
@@ -116,7 +124,7 @@ def chat_endpoint(request: ChatRequest):
 
             return ChatResponse(reply=reply)
 
-        # 2️⃣ Retrieve candidate schemes
+        # 2️⃣ Normal scheme discovery
         candidates = retrieve_candidates(schemes, user_profile)
         print(f"🔍 Candidates after intent+state filter: {len(candidates)}")
 
@@ -125,7 +133,7 @@ def chat_endpoint(request: ChatRequest):
                 reply="I couldn't find relevant schemes for your request."
             )
 
-        # 3️⃣ Farmer insurance shortcut (no AI)
+        # 3️⃣ Farmer insurance shortcut
         if user_profile.get("occupation") == "farmer":
             insurance_schemes = [
                 s for s in candidates
