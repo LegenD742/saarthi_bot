@@ -1,5 +1,3 @@
-
-
 import json
 import re
 from app.utils.gemini_client import client
@@ -11,7 +9,6 @@ def clean_json(text: str):
     """
     text = text.strip()
 
-    # Remove ```json and ``` if present
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*", "", text)
         text = text.replace("```", "")
@@ -27,6 +24,7 @@ def extract_entities_with_gemini(user_text: str):
     - If the user is asking for money, help, fees, or support for education → intent = "Scholarship"(capital S)
     - If the user is talking about education in general without money → intent = "education"
     - If the user is a farmer or mentions agriculture → intent = "farmer"
+    - if the user is asking the help for any help for the application filling or form filling or documentation help the intent is "applicationhelp" 
 
 Return ONLY valid JSON. No markdown.
 

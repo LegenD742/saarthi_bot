@@ -9,6 +9,10 @@ from app.matcher.preprocess import preprocess_schemes
 from app.matcher.retrieve_candidates import retrieve_candidates
 from app.matcher.ai_eligibility import check_eligibility_with_ai
 
+from app.nlp.application_helper import help_with_application
+from app.nlp.intent_router import route_intent
+
+
 
 router = APIRouter()
 
