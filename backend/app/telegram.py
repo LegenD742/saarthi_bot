@@ -14,29 +14,37 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 async def telegram_webhook(request: Request):
     data = await request.json()
 
+    # Ignore non-message updates
     if "message" not in data:
         return {"ok": True}
 
-    chat_id = data["message"]["chat"]["id"]
-    text = data["message"].get("text")
+    message = data["message"]
+    chat_id = str(message["chat"]["id"])
+    text = message.get("text")
 
     if not text:
         return {"ok": True}
 
-    # IMPORTANT: use chat_id as session id
-    request.state.session_override = str(chat_id)
-
-    response = chat_endpoint(
-        request=request,
-        body=ChatRequest(message=text)
+    # 🔑 IMPORTANT: pass chat_id INSIDE ChatRequest
+    chat_request = ChatRequest(
+        message=text,
+        chat_id=chat_id
     )
 
+    # Call backend chat logic
+    response = chat_endpoint(
+        request=request,
+        body=chat_request
+    )
+
+    # Send reply back to Telegram
     requests.post(
         f"{TELEGRAM_API}/sendMessage",
         json={
             "chat_id": chat_id,
             "text": response.reply
-        }
+        },
+        timeout=15
     )
 
     return {"ok": True}

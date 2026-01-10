@@ -449,6 +449,12 @@ def chat_endpoint(request: Request, body: ChatRequest):
         print("\n========== NEW CHAT ==========")
         print("User message:", text)
 
+        if text.lower() in ["/reset", "reset", "/start"]:
+            USER_SESSIONS.pop(session_id, None)
+            return ChatResponse(
+                reply="✅ Session reset. You can start fresh now."
+            )
+
         session = USER_SESSIONS.get(session_id, {})
         session["lang"] = lang
 
