@@ -2,12 +2,9 @@
 
 An AI-powered assistant that helps the underprivilaged discover Indian government welfare schemes they may be eligible for, using **natural language queries in Hindi/English/Hinglish**.
 
----
-
-## 📌 Problem Statement
-
 Many government welfare schemes in India fail to reach their intended beneficiaries due to lack of awareness, language barriers, and complex eligibility criteria. Farmers and students often do not know which schemes apply to them or how to begin the application process.
 
+Find The Bot On Telegram : https://t.me/Sarthi7651_bot
 ---
 
 ## 💡 Solution Overview
